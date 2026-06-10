@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>Latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <DebugType>embedded</DebugType>
+    <AssemblyName>LootVarianceMod</AssemblyName>
+    <RootNamespace>LootVarianceMod</RootNamespace>
+
+    <GameDir>E:\games\TheLongDark</GameDir>
+    <MelonLoaderDir>$(GameDir)\MelonLoader</MelonLoaderDir>
+    <Il2CppDir>$(MelonLoaderDir)\Il2CppAssemblies</Il2CppDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="MelonLoader">
+      <HintPath>$(MelonLoaderDir)\net6\MelonLoader.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(MelonLoaderDir)\net6\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Runtime">
+      <HintPath>$(MelonLoaderDir)\net6\Il2CppInterop.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="STBlade.Modding.TLD.ModSettings" Version="1.9.0" />
+    <PackageReference Include="STBlade.Modding.TLD.Il2CppAssemblies.Windows" Version="2.51.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="localization.json" />
+  </ItemGroup>
+</Project>
