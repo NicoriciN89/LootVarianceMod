@@ -29,7 +29,6 @@ namespace LootVarianceMod
 
         private static readonly string[] StoryTools =
         {
-            "GEAR_JeremiahKnife",
             "GEAR_SurvivalKnife",
             "GEAR_CougarClawKnife",
             "GEAR_KeroseneLamp_Spelunkers",
@@ -77,8 +76,6 @@ namespace LootVarianceMod
             // Fire / light
             "GEAR_MatchBook",
             "GEAR_WoodMatches",
-            "GEAR_AccelerantTinder",
-            "GEAR_Candle",
             // Tools / repair
             "GEAR_SewingKit",
             "GEAR_WhetstoneKnife",
@@ -88,7 +85,6 @@ namespace LootVarianceMod
             "GEAR_WoolMittens",
             "GEAR_TuqueBeanie",
             // Other
-            "GEAR_FlareA",
             "GEAR_RopeLashing",
         };
 
@@ -128,7 +124,7 @@ namespace LootVarianceMod
                 GameObject go = null;
                 try
                 {
-                    GearItem prefab = GearItem.LoadGearItemPrefab(gearName);
+                    GearItem prefab = LoadPrefab(gearName);
                     if (prefab == null) continue;
 
                     go = GameObject.Instantiate(prefab.gameObject, container.transform.position, Quaternion.identity);
@@ -139,6 +135,7 @@ namespace LootVarianceMod
 
                     gi.RollGearCondition(GearStartCondition.Random);
                     container.AddGear(gi);
+                    spawnedObjects.Add(go);
                     spawned++;
                 }
                 catch (Exception e)
@@ -152,12 +149,36 @@ namespace LootVarianceMod
                 Core.Log.Msg(Loc.SpawnedCache(container.name, spawned));
         }
 
-        // Containers that have already been processed this session
-        private static readonly HashSet<int> handledContainers = new();
+        // Prefab cache — LoadGearItemPrefab is a Unity asset lookup; avoid repeating it.
+        private static readonly Dictionary<string, GearItem> prefabCache = new();
+
+        private static GearItem LoadPrefab(string gearName)
+        {
+            if (prefabCache.TryGetValue(gearName, out var cached)) return cached;
+            var prefab = GearItem.LoadGearItemPrefab(gearName);
+            prefabCache[gearName] = prefab; // null is valid (prefab doesn't exist)
+            return prefab;
+        }
+
+        // Containers that have already been processed this zone.
+        // Key: "name@x,y,z" — stable across multiple PopulateWithRandomGear calls on the same object.
+        private static readonly HashSet<string> handledContainers = new();
+
+        private static string ContainerKey(Container c)
+        {
+            var p = c.transform.position;
+            return string.Intern($"{c.gameObject.name}@{p.x:F1},{p.y:F1},{p.z:F1}");
+        }
 
         // Story items that were spawned this session but not yet picked up
         // Prevents the same item appearing twice before the player collects the first one
         private static readonly HashSet<string> spawnedThisSession = new();
+
+        // All GameObjects spawned by this mod — destroyed on exit to main menu
+        private static readonly List<GameObject> spawnedObjects = new();
+
+        // Bonus ammo fires at most once per zone load
+        private static bool _ammoSpawnedThisZone = false;
 
         // ── Condition Variance ────────────────────────────────────────────────────
 
@@ -206,9 +227,9 @@ namespace LootVarianceMod
         {
             if (__instance == null) return;
 
-            int id = __instance.GetInstanceID();
-            if (handledContainers.Contains(id)) return;
-            handledContainers.Add(id);
+            string key = ContainerKey(__instance);
+            if (handledContainers.Contains(key)) return;
+            handledContainers.Add(key);
 
             bool isSafe = __instance.gameObject.name.IndexOf("safe", StringComparison.OrdinalIgnoreCase) >= 0;
 
@@ -221,10 +242,7 @@ namespace LootVarianceMod
                 {
                     string itemName = PickAvailableStoryItem();
                     if (itemName != null)
-                    {
-                        if (isSafe) TryAddStoryItemToContainer(__instance, itemName);
-                        else        TrySpawnLooseItemNearContainer(__instance, itemName);
-                    }
+                        TryAddStoryItemToContainer(__instance, itemName);
                 }
             }
 
@@ -237,46 +255,34 @@ namespace LootVarianceMod
         private static readonly string[] RevolverGearNames = { "GEAR_Revolver", "GEAR_RevolverStubNosed", "GEAR_RevolverFancy", "GEAR_RevolverGreen" };
         private static readonly string[] BowGearNames      = { "GEAR_Bow", "GEAR_Bow_Woodwrights", "GEAR_Bow_Manufactured", "GEAR_Bow_Bushcraft" };
 
-        // Spawns ammo near a world position.
-        // Stackable ammo (bullets): one object with m_Units = amount.
-        // Non-stackable (arrows): one object per arrow, scattered slightly.
-        private static void SpawnAmmoNear(string gearName, int amount, Vector3 basePos)
+        // Adds ammo directly to the player's inventory — no world spawn, no geometry issues.
+        private static void GiveAmmoToPlayer(string gearName, int amount)
         {
-            GearItem prefab = GearItem.LoadGearItemPrefab(gearName);
+            GearItem prefab = LoadPrefab(gearName);
             if (prefab == null) { Core.Log.Warning($"[LVM] Ammo prefab not found: {gearName}"); return; }
 
-            bool isStackable = prefab.m_StackableItem != null;
-
-            if (isStackable)
+            GameObject go = null;
+            try
             {
-                Vector2 off = UnityEngine.Random.insideUnitCircle.normalized * UnityEngine.Random.Range(0.6f, 1.4f);
-                Vector3 pos = new Vector3(basePos.x + off.x, basePos.y + 0.3f, basePos.z + off.y);
-                var go = GameObject.Instantiate(prefab.gameObject, pos, Quaternion.Euler(0f, UnityEngine.Random.Range(0f, 360f), 0f));
+                go = GameObject.Instantiate(prefab.gameObject);
                 go.name = prefab.name;
-                var xpb = go.GetComponent<DisableObjectForXPMode>();
-                if (xpb != null) GameObject.Destroy(xpb);
+
                 var gi = go.GetComponent<GearItem>();
                 if (gi == null) { GameObject.Destroy(go); return; }
-                gi.m_StackableItem.m_Units = amount;
-            }
-            else
-            {
-                // Arrows: spawn individually, scattered in a small cluster.
-                for (int i = 0; i < amount; i++)
-                {
-                    Vector2 off = UnityEngine.Random.insideUnitCircle * 0.3f;
-                    Vector3 pos = new Vector3(basePos.x + off.x, basePos.y + 0.3f, basePos.z + off.y);
-                    var go = GameObject.Instantiate(prefab.gameObject, pos, Quaternion.Euler(UnityEngine.Random.Range(-15f, 15f), UnityEngine.Random.Range(0f, 360f), 0f));
-                    go.name = prefab.name;
-                    var xpb = go.GetComponent<DisableObjectForXPMode>();
-                    if (xpb != null) GameObject.Destroy(xpb);
-                    var gi = go.GetComponent<GearItem>();
-                    if (gi == null) { GameObject.Destroy(go); continue; }
-                    gi.RollGearCondition(GearStartCondition.Random);
-                }
-            }
 
-            Core.Log.Msg($"[LVM] Spawned ammo: {gearName} x{amount}");
+                if (gi.m_StackableItem != null)
+                    gi.m_StackableItem.m_Units = amount;
+                else
+                    gi.RollGearCondition(GearStartCondition.Random);
+
+                GameManager.GetInventoryComponent().AddGear(gi);
+                Core.Log.Msg($"[LVM] Added ammo to inventory: {gearName} x{amount}");
+            }
+            catch (Exception e)
+            {
+                if (go != null) GameObject.Destroy(go);
+                Core.Log.Warning($"[LVM] Bonus ammo failed ({gearName}): {e.Message}");
+            }
         }
 
         // Shared: build list of ammo types the player is low on.
@@ -298,6 +304,7 @@ namespace LootVarianceMod
         private static void TryAddBonusAmmo(Container container)
         {
             if (!Settings.enableBonusAmmo) return;
+            if (_ammoSpawnedThisZone) return;
 
             var candidates = CollectLowAmmoCandidates();
             if (candidates == null || candidates.Count == 0) return;
@@ -305,27 +312,15 @@ namespace LootVarianceMod
 
             string chosen = candidates[UnityEngine.Random.Range(0, candidates.Count)];
             int amount = UnityEngine.Random.Range(5, 8);
-
-            // Always use the player's Y as floor reference — containers can be at any height.
-            var playerT = GameManager.GetPlayerTransform();
-            float floorY = playerT != null ? playerT.position.y : container.transform.position.y;
-            Vector2 off = UnityEngine.Random.insideUnitCircle.normalized * UnityEngine.Random.Range(0.6f, 1.4f);
-            Vector3 spawnPos = new Vector3(
-                container.transform.position.x + off.x,
-                floorY + 0.3f,
-                container.transform.position.z + off.y);
-
-            try { SpawnAmmoNear(chosen, amount, spawnPos); }
-            catch (Exception e) { Core.Log.Warning($"[LVM] Bonus ammo failed ({chosen}): {e.Message}"); }
+            GiveAmmoToPlayer(chosen, amount);
+            _ammoSpawnedThisZone = true;
         }
 
-        // Periodic check (called every ~2 min): spawn ammo near the player if they're low.
+        // Periodic check (called every ~2 min): give ammo directly to player if they're low.
         internal static void TryPeriodicBonusAmmo()
         {
             if (!Settings.enableBonusAmmo) return;
-
-            var playerT = GameManager.GetPlayerTransform();
-            if (playerT == null) return;
+            if (GameManager.GetPlayerTransform() == null) return;
 
             var candidates = CollectLowAmmoCandidates();
             if (candidates == null || candidates.Count == 0) return;
@@ -333,16 +328,7 @@ namespace LootVarianceMod
 
             string chosen = candidates[UnityEngine.Random.Range(0, candidates.Count)];
             int amount = UnityEngine.Random.Range(5, 8);
-
-            // Drop a few metres away from the player — close enough to find, not immediately obvious.
-            Vector2 offset = UnityEngine.Random.insideUnitCircle.normalized * UnityEngine.Random.Range(2.0f, 4.0f);
-            Vector3 spawnPos = new Vector3(
-                playerT.position.x + offset.x,
-                playerT.position.y + 0.02f,
-                playerT.position.z + offset.y);
-
-            try { SpawnAmmoNear(chosen, amount, spawnPos); }
-            catch (Exception e) { Core.Log.Warning($"[LVM] Periodic ammo failed ({chosen}): {e.Message}"); }
+            GiveAmmoToPlayer(chosen, amount);
         }
 
         // Returns a story item the player doesn't already own and that hasn't been
@@ -371,13 +357,21 @@ namespace LootVarianceMod
 
             foreach (string item in pool)
             {
-                // Skip items the player currently carries
-                if (inventory != null && inventory.GearInInventory(item, 1))
-                    continue;
+                bool inInventory = inventory != null && inventory.GearInInventory(item, 1);
 
-                // Skip items already spawned this session (sitting in the world uncollected)
+                // Skip if player already has this exact item
+                if (inInventory) continue;
+
+                // If spawned this session but no longer in inventory (broken/lost) — allow again
                 if (spawnedThisSession.Contains(item))
-                    continue;
+                {
+                    if (inInventory) continue;
+                    spawnedThisSession.Remove(item);
+                }
+
+                // Skip items whose prefab isn't loaded (e.g. DLC-exclusive gear on a base-game
+                // install) — try the next candidate instead of stalling story items entirely.
+                if (LoadPrefab(item) == null) continue;
 
                 return item;
             }
@@ -392,7 +386,7 @@ namespace LootVarianceMod
             GameObject go = null;
             try
             {
-                GearItem prefab = GearItem.LoadGearItemPrefab(gearName);
+                GearItem prefab = LoadPrefab(gearName);
                 if (prefab == null) { Core.Log.Warning(Loc.ItemNotFound(gearName)); return; }
 
                 go = GameObject.Instantiate(prefab.gameObject, container.transform.position, Quaternion.identity);
@@ -403,6 +397,7 @@ namespace LootVarianceMod
 
                 gi.RollGearCondition(GearStartCondition.Random);
                 container.AddGear(gi);
+                spawnedObjects.Add(go);
 
                 spawnedThisSession.Add(gearName);
                 Core.Log.Msg(Loc.SpawnedSafeItem(container.name, gearName));
@@ -414,32 +409,70 @@ namespace LootVarianceMod
             }
         }
 
-        // House / fishing hut: item lies on the floor near the container.
-        private static void TrySpawnLooseItemNearContainer(Container container, string gearName)
+
+        // ── Clear state on scene / save load ──────────────────────────────────────
+        // handledContainers is NOT cleared on zone travel — a container processed
+        // once this session must never be processed again (prevents duplicate caches).
+        // spawnedThisSession is also kept across zone travel for the same reason.
+        // Both are cleared only on new game (DestroyAllSpawnedObjects).
+
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(SaveGameSystem), nameof(SaveGameSystem.LoadSceneData),
+            new Type[] { typeof(string), typeof(string) })]
+        private static void SaveGameSystem_LoadSceneData()
+        {
+            _ammoSpawnedThisZone = false;
+            // Remove dead Il2Cpp wrapper references left over from the previous zone.
+            spawnedObjects.RemoveAll(go => go == null);
+        }
+
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(SaveGameSystem), nameof(SaveGameSystem.RestoreGlobalData))]
+        private static void SaveGameSystem_RestoreGlobalData()
+        {
+            // handledContainers and spawnedThisSession intentionally NOT cleared —
+            // prevents duplicate caches/items across save/load cycles within a session.
+            _ammoSpawnedThisZone = false;
+        }
+
+        internal static void DestroyAllSpawnedObjects()
+        {
+            foreach (var go in spawnedObjects)
+            {
+                if (go != null) GameObject.Destroy(go);
+            }
+            spawnedObjects.Clear();
+            handledContainers.Clear();
+            spawnedThisSession.Clear();
+            prefabCache.Clear();
+        }
+
+        // ── Debug helpers (used by console commands) ──────────────────────────────
+
+        internal static int DEBUG_SpawnedCount()  => spawnedObjects.Count;
+        internal static int DEBUG_HandledCount()  => handledContainers.Count;
+        internal static int DEBUG_SessionItemCount() => spawnedThisSession.Count;
+
+        internal static string DEBUG_PickStoryItem() => PickAvailableStoryItem();
+
+        internal static void DEBUG_GiveStoryItem(string gearName)
         {
             GameObject go = null;
             try
             {
-                GearItem prefab = GearItem.LoadGearItemPrefab(gearName);
+                GearItem prefab = LoadPrefab(gearName);
                 if (prefab == null) { Core.Log.Warning(Loc.ItemNotFound(gearName)); return; }
 
-                // Spawn near the player, not the container — containers are often against walls.
-                var playerT = GameManager.GetPlayerTransform();
-                Vector3 basePos = playerT != null ? playerT.position : container.transform.position;
-                Vector2 offset = UnityEngine.Random.insideUnitCircle.normalized * UnityEngine.Random.Range(0.4f, 1.0f);
-                Vector3 spawnPos = new Vector3(basePos.x + offset.x, basePos.y + 0.05f, basePos.z + offset.y);
-                go = GameObject.Instantiate(prefab.gameObject, spawnPos, Quaternion.Euler(0f, UnityEngine.Random.Range(0f, 360f), 0f));
+                go = GameObject.Instantiate(prefab.gameObject);
                 go.name = prefab.name;
-
-                var xpBlock = go.GetComponent<DisableObjectForXPMode>();
-                if (xpBlock != null) GameObject.Destroy(xpBlock);
 
                 var gi = go.GetComponent<GearItem>();
                 if (gi == null) { GameObject.Destroy(go); return; }
-                gi.RollGearCondition(GearStartCondition.Random);
 
+                gi.RollGearCondition(GearStartCondition.Random);
+                GameManager.GetInventoryComponent().AddGear(gi);
+                spawnedObjects.Add(go);
                 spawnedThisSession.Add(gearName);
-                Core.Log.Msg(Loc.SpawnedItem(container.name, gearName));
             }
             catch (Exception e)
             {
@@ -448,31 +481,22 @@ namespace LootVarianceMod
             }
         }
 
-        // ── Clear state on scene / save load ──────────────────────────────────────
-        // handledContainers resets every zone so containers re-roll on revisit.
-        // spawnedThisSession is intentionally NOT cleared on zone travel — once
-        // this mod has spawned a story item anywhere this session it will not
-        // spawn the same item again, even if the player dropped it.
-        // It is cleared only when a new save is loaded (fresh game).
-
-        [HarmonyPrefix]
-        [HarmonyPatch(typeof(SaveGameSystem), nameof(SaveGameSystem.LoadSceneData),
-            new Type[] { typeof(string), typeof(string) })]
-        private static void SaveGameSystem_LoadSceneData()
+        internal static void DEBUG_SpawnCacheIn(Container container)
         {
-            handledContainers.Clear();
-        }
-
-        [HarmonyPrefix]
-        [HarmonyPatch(typeof(SaveGameSystem), nameof(SaveGameSystem.RestoreGlobalData))]
-        private static void SaveGameSystem_RestoreGlobalData()
-        {
-            handledContainers.Clear();
-            spawnedThisSession.Clear();
+            TryAddSurvivorCache(container);
         }
     }
 
     // Must be top-level classes — Harmony doesn't scan nested types inside a [HarmonyPatch] class.
+
+    [HarmonyPatch(typeof(GameManager), nameof(GameManager.DoExitToMainMenu))]
+    internal static class Patch_LVM_ExitToMainMenu
+    {
+        private static void Postfix()
+        {
+            Patches.DestroyAllSpawnedObjects();
+        }
+    }
 
     [HarmonyPatch(typeof(Localization), "Get")]
     internal static class Patch_LVM_LocalizationGet

@@ -11,8 +11,14 @@ namespace LootVarianceMod
 
         // ── Mod init ──────────────────────────────────────────────────────────────
 
+        private static string Version =>
+            System.Reflection.Assembly.GetExecutingAssembly()
+                .GetCustomAttributes(typeof(MelonLoader.MelonInfoAttribute), false)
+                is MelonLoader.MelonInfoAttribute[] attrs && attrs.Length > 0
+                ? attrs[0].Version : "?";
+
         internal static string ModLoaded =>
-            Get("LootVarianceMod v1.1.0 loaded", "LootVarianceMod v1.1.0 загружен");
+            Get($"LootVarianceMod v{Version} loaded", $"LootVarianceMod v{Version} загружен");
 
         // ── Spawn messages ────────────────────────────────────────────────────────
 

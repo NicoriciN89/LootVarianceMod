@@ -90,7 +90,7 @@ namespace LootVarianceMod
         [Name("LVM.BONUS_AMMO_THRESHOLD", Localize = true)]
         [Description("LVM.DESC_BONUS_AMMO_THRESHOLD", Localize = true)]
         [Slider(1, 20, 20)]
-        public int bonusAmmoThreshold = 5;
+        public int bonusAmmoThreshold = 10;
 
         [Section("LVM.SECTION_CACHE", Localize = true)]
         [Name("LVM.ENABLE_CACHE", Localize = true)]
