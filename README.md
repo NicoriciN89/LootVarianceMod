@@ -47,6 +47,11 @@ Output: `bin/Release/net6.0/LootVarianceMod.dll`
 
 ## Changelog
 
+### v1.1.5
+- Fixed: story items and survivor cache could spam multiple rolls onto composite world objects (e.g. vehicles, which are made of several sub-containers sharing one name/position) that share a container name and near-identical position
+- Fixed: a story item's container key no longer breaks across zone reloads, so the same container isn't treated as "new" and re-rolled every time you re-enter an area
+- Changed: each story item now spawns at most once per game session — including after it breaks or is lost, so you can no longer end up with two of the same story item at once. It becomes available again on your next session.
+
 ### v1.1.4
 - Fixed: story items could fail to spawn on installs without the Tales From the Far Territory DLC — the mod now skips DLC-exclusive items and picks another available one instead of giving up
 - Docs: noted which story items require the Tales From the Far Territory DLC

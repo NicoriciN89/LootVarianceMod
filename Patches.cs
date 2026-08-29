@@ -136,6 +136,7 @@ namespace LootVarianceMod
                     gi.RollGearCondition(GearStartCondition.Random);
                     container.AddGear(gi);
                     spawnedObjects.Add(go);
+                    DEBUG_RecordSpawn(gearName);
                     spawned++;
                 }
                 catch (Exception e)
@@ -161,21 +162,44 @@ namespace LootVarianceMod
         }
 
         // Containers that have already been processed this zone.
-        // Key: "name@x,y,z" — stable across multiple PopulateWithRandomGear calls on the same object.
+        // Key: root object name + container name + rounded position. Must be content-based,
+        // not instance-based (GetInstanceID/transform.root id): open-world zones like
+        // MountainTownRegion tear down and re-instantiate every GameObject on each
+        // enter/exit of an interior, so the *same* container gets a new instance ID every
+        // time — an instance-based key would treat it as new and re-roll loot on every visit.
+        // Rooting by the parent object's name (not just the container's own name) collapses
+        // composite objects like cars, whose several sub-Containers (glovebox, trunk, bags)
+        // all share one parent name and near-identical position, into a single key —
+        // fixing repeated cache/item spam on a single vehicle without needing instance IDs.
         private static readonly HashSet<string> handledContainers = new();
 
         private static string ContainerKey(Container c)
         {
             var p = c.transform.position;
-            return string.Intern($"{c.gameObject.name}@{p.x:F1},{p.y:F1},{p.z:F1}");
+            string rootName = c.transform.root.name;
+            return string.Intern($"{rootName}/{c.gameObject.name}@{p.x:F0},{p.y:F0},{p.z:F0}");
         }
 
-        // Story items that were spawned this session but not yet picked up
-        // Prevents the same item appearing twice before the player collects the first one
+        // Story items given out this session. Once an item is in here it is never chosen
+        // again for the rest of the session — including after it's picked up, broken, or its
+        // container's zone unloads (zone unload destroys the GameObject same as breaking it,
+        // so a GameObject-liveness check can't tell "broken" from "just left the building";
+        // a name-only set is the only thing that reliably means "one copy of this item ever,
+        // per session"). Cleared only on new game (DestroyAllSpawnedObjects).
         private static readonly HashSet<string> spawnedThisSession = new();
 
         // All GameObjects spawned by this mod — destroyed on exit to main menu
         private static readonly List<GameObject> spawnedObjects = new();
+
+        // Debug: counts every successful spawn by item name, for the whole session
+        // (survives zone travel, cleared only on new game). Used to diagnose item spam.
+        private static readonly Dictionary<string, int> DEBUG_spawnCounts = new();
+
+        private static void DEBUG_RecordSpawn(string gearName)
+        {
+            DEBUG_spawnCounts.TryGetValue(gearName, out int n);
+            DEBUG_spawnCounts[gearName] = n + 1;
+        }
 
         // Bonus ammo fires at most once per zone load
         private static bool _ammoSpawnedThisZone = false;
@@ -276,6 +300,7 @@ namespace LootVarianceMod
                     gi.RollGearCondition(GearStartCondition.Random);
 
                 GameManager.GetInventoryComponent().AddGear(gi);
+                DEBUG_RecordSpawn(gearName);
                 Core.Log.Msg($"[LVM] Added ammo to inventory: {gearName} x{amount}");
             }
             catch (Exception e)
@@ -357,17 +382,13 @@ namespace LootVarianceMod
 
             foreach (string item in pool)
             {
-                bool inInventory = inventory != null && inventory.GearInInventory(item, 1);
-
                 // Skip if player already has this exact item
-                if (inInventory) continue;
+                if (inventory != null && inventory.GearInInventory(item, 1)) continue;
 
-                // If spawned this session but no longer in inventory (broken/lost) — allow again
-                if (spawnedThisSession.Contains(item))
-                {
-                    if (inInventory) continue;
-                    spawnedThisSession.Remove(item);
-                }
+                // Skip if this item was already given out this session — at most one copy
+                // of each story item ever exists per session, regardless of what happened
+                // to it (picked up, broken, or its zone simply unloaded).
+                if (spawnedThisSession.Contains(item)) continue;
 
                 // Skip items whose prefab isn't loaded (e.g. DLC-exclusive gear on a base-game
                 // install) — try the next candidate instead of stalling story items entirely.
@@ -398,6 +419,7 @@ namespace LootVarianceMod
                 gi.RollGearCondition(GearStartCondition.Random);
                 container.AddGear(gi);
                 spawnedObjects.Add(go);
+                DEBUG_RecordSpawn(gearName);
 
                 spawnedThisSession.Add(gearName);
                 Core.Log.Msg(Loc.SpawnedSafeItem(container.name, gearName));
@@ -445,11 +467,13 @@ namespace LootVarianceMod
             handledContainers.Clear();
             spawnedThisSession.Clear();
             prefabCache.Clear();
+            DEBUG_spawnCounts.Clear();
         }
 
         // ── Debug helpers (used by console commands) ──────────────────────────────
 
         internal static int DEBUG_SpawnedCount()  => spawnedObjects.Count;
+        internal static IEnumerable<KeyValuePair<string, int>> DEBUG_SpawnCounts() => DEBUG_spawnCounts;
         internal static int DEBUG_HandledCount()  => handledContainers.Count;
         internal static int DEBUG_SessionItemCount() => spawnedThisSession.Count;
 
@@ -473,6 +497,7 @@ namespace LootVarianceMod
                 GameManager.GetInventoryComponent().AddGear(gi);
                 spawnedObjects.Add(go);
                 spawnedThisSession.Add(gearName);
+                DEBUG_RecordSpawn(gearName);
             }
             catch (Exception e)
             {
