@@ -8,16 +8,20 @@ A MelonLoader mod for **The Long Dark** that makes finding gear more exciting an
 Items found in containers spawn with a much wider durability spread — from nearly destroyed to nearly brand new. Configurable min/max range.
 
 ### Story Mode Items in Survival
-Unique named weapons, tools and clothing from the story episodes (Barb's Rifle, Jeremiah's Knife, Grey Mother's Boots, etc.) can now appear in containers during a Survival run.
-- Higher chance inside safes
+Unique named weapons, tools and gear from the story episodes (Barb's Rifle, the Trader's and Curator's Rifles, the Survival Knife, the Spelunker's Lamp, etc.) can now appear in containers during a Survival run.
+- Rolled the first time you search a container; higher chance inside safes
+- Each story item appears at most once per playthrough, even across saves and reloads
+- Per-area limit (default 1) so a single region doesn't hand out the whole set
+- Never in trash cans, fridges, stoves, toilets or mailboxes
 - Toggle weapons / tools / clothing independently
-- **Note:** several story items (Vaughn's Rifle, Fancy/Green Revolver, Cougar Claw Knife, Kerosene Lamp - Spelunkers, Grey Mother's Boots, Down BedRoll, Manufactured/Bushcraft Bow, Woodwright's Bow) are exclusive to the **Tales From the Far Territory** DLC and will only appear if you own it. Without the DLC, the pool falls back to the items that are available.
+- **Note:** several story items (Vaughn's Rifle, Fancy/Green Revolver, Cougar Claw Knife, Kerosene Lamp - Spelunkers, Down BedRoll, Manufactured/Bushcraft Bow, Woodwright's Bow) are exclusive to the **Tales From the Far Territory** DLC and will only appear if you own it. Without the DLC, the pool falls back to the items that are available.
+- **Not included:** Grey Mother's Boots, Jeremiah's Knife and Astrid's / Will's outfits — the game can't keep them in a Survival save, so they would disappear on reload. The Episode 5 shotgun isn't available in Survival.
 
 ### Bonus Ammo
-When you are low on ammo for a weapon you carry, containers may occasionally produce a few extra rounds as a lucky find.
+When you are low on ammo for a weapon you carry, containers may occasionally produce a few extra rounds as a lucky find. Extra rounds go straight into your existing stack (rifles, revolvers, bows, shotgun).
 
 ### Survivor Cache
-Rare chance to open a chest or wardrobe and find a hidden stash of survival supplies left by a previous survivor — food, medicine, fire-starting gear, tools, clothing. Every cache has a random mix of 3–5 items in varied condition.
+Rare chance to open a chest or wardrobe and find a hidden stash of survival supplies left by a previous survivor — mostly food, medicine and matches, sometimes warm clothing, rarely a tool. Every cache has a random mix of 3–5 items in varied condition.
 - Separate chance sliders for chests and wardrobes
 - Configurable item count range
 
@@ -31,21 +35,35 @@ Rare chance to open a chest or wardrobe and find a hidden stash of survival supp
 
 All options are adjustable in-game via the **Options → Mods → Loot Variance** menu.
 
+The list of story items already found is kept per save in `UserData/LootVarianceMod/<save>.txt`; the mod never modifies your save files.
+
 ## Requirements
 
 - The Long Dark (Steam)
-- MelonLoader 0.6+
+- MelonLoader 0.7+ (tested on 0.7.3)
 - ModSettings 2.2+
 
 ## Building from Source
 
 ```
-dotnet build --configuration Release
+dotnet build --configuration Release -p:GameDir="D:\Games\TheLongDark"
 ```
 
 Output: `bin/Release/net6.0/LootVarianceMod.dll`
 
 ## Changelog
+
+### v1.2.0
+- Fixed: story items vanished after saving and reloading — they are now spawned through the game's own `InstantiateGearItem` path (the one saves use to restore gear) and stripped of mission-object data
+- Fixed: invisible models on the pickup screen when taking a story item (e.g. Cougar Claw Knife) from a container
+- Fixed: survivor caches used item names that don't exist in the game, so caches were filled from the few valid ones (mostly hacksaws). New weighted pool: mostly food, medicine and matches; tools are rare
+- Fixed: the mod placed items in the main menu background scene, which used up story items for the session (thanks qqqbbb)
+- Fixed: bonus ammo created a separate stack every time — it now merges into the existing stack
+- Changed: story items are rolled when you first search a container instead of on area load, and each one appears at most once per playthrough (persisted per save)
+- Changed: story items never spawn in trash cans, fridges, stoves, toilets or mailboxes
+- Removed: Grey Mother's Boots from the pool (can't be kept in a Survival save)
+- Added: "Max Story Items per Area" setting (default 1)
+- Added: shotgun support for bonus ammo; survivor cache contents in the log; `lvm_scan` console command
 
 ### v1.1.5
 - Fixed: story items and survivor cache could spam multiple rolls onto composite world objects (e.g. vehicles, which are made of several sub-containers sharing one name/position) that share a container name and near-identical position

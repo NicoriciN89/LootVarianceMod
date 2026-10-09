@@ -17,6 +17,7 @@ namespace LootVarianceMod
             uConsole.RegisterCommand("lvm_cleanup",   new System.Action(CMD_Cleanup));
             uConsole.RegisterCommand("lvm_status",    new System.Action(CMD_Status));
             uConsole.RegisterCommand("lvm_spamcheck", new System.Action(CMD_SpamCheck));
+            uConsole.RegisterCommand("lvm_scan",      new System.Action(CMD_Scan));
         }
 
         // lvm_story — give a story item directly to the player's inventory
@@ -73,7 +74,17 @@ namespace LootVarianceMod
         {
             uConsole.Log($"[LVM] Spawned objects tracked: {Patches.DEBUG_SpawnedCount()}");
             uConsole.Log($"[LVM] Handled containers this zone: {Patches.DEBUG_HandledCount()}");
-            uConsole.Log($"[LVM] Story items spawned this session: {Patches.DEBUG_SessionItemCount()}");
+            uConsole.Log($"[LVM] Story items handed out in this save: {Patches.DEBUG_SessionItemCount()}");
+        }
+
+        // lvm_scan — list which story/cache items exist in this install (DLC and episodes vary)
+        private static void CMD_Scan()
+        {
+            foreach (string line in Patches.DEBUG_ScanPools())
+            {
+                uConsole.Log(line);
+                Core.Log.Msg(line);
+            }
         }
 
         // lvm_spamcheck — print every item this mod has spawned this session, most-spawned first.

@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using HarmonyLib;
 using Il2Cpp;
 using MelonLoader;
+using MelonLoader.Utils;
 using UnityEngine;
 
 namespace LootVarianceMod
@@ -12,6 +14,11 @@ namespace LootVarianceMod
     internal static class Patches
     {
         // ── Story item lists ──────────────────────────────────────────────────────
+        // Names that don't exist in the current install (DLC not owned, episode not installed)
+        // or that the game can't instantiate by name are skipped at runtime (see lvm_scan).
+        // Not included: GreyMotherBoots, JeremiahKnife, Astrid*/Will* outfits — the game can't
+        // instantiate them by name in Survival, which is also how saves restore gear, so they
+        // vanished on reload.
 
         private static readonly string[] StoryWeapons =
         {
@@ -25,6 +32,7 @@ namespace LootVarianceMod
             "GEAR_Bow_Woodwrights",
             "GEAR_Bow_Manufactured",
             "GEAR_Bow_Bushcraft",
+            "GEAR_Shotgun",
         };
 
         private static readonly string[] StoryTools =
@@ -33,12 +41,19 @@ namespace LootVarianceMod
             "GEAR_CougarClawKnife",
             "GEAR_KeroseneLamp_Spelunkers",
             "GEAR_Flashlight_LongLasting",
+            "GEAR_Flashlight_CrankLamp",
         };
 
         private static readonly string[] StoryClothing =
         {
-            "GEAR_GreyMotherBoots",
             "GEAR_BedRoll_Down",
+        };
+
+        // Containers where a story item would break immersion (trash cans, appliances, mailboxes...).
+        private static readonly string[] StoryExcludedKeywords =
+        {
+            "trash", "garbage", "dumpster", "waste", "recycl", "litter",
+            "toilet", "fridge", "freezer", "oven", "stove", "microwave", "mailbox",
         };
 
         // ── Survivor Cache ────────────────────────────────────────────────────────
@@ -46,46 +61,67 @@ namespace LootVarianceMod
         private static readonly string[] ChestKeywords    = { "chest", "trunk", "footlocker" };
         private static readonly string[] WardrobeKeywords = { "wardrobe", "dresser", "closet", "cabinet", "drawer" };
 
+        private static bool NameContainsAny(string name, string[] keywords)
+        {
+            foreach (string kw in keywords)
+                if (name.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            return false;
+        }
+
         // Returns 0 = not a cache container, 1 = chest, 2 = wardrobe
         private static int CacheContainerType(Container c)
         {
             string name = c.gameObject.name;
-            foreach (string kw in ChestKeywords)
-                if (name.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0) return 1;
-            foreach (string kw in WardrobeKeywords)
-                if (name.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0) return 2;
+            if (NameContainsAny(name, ChestKeywords))    return 1;
+            if (NameContainsAny(name, WardrobeKeywords)) return 2;
             return 0;
         }
 
-        // Varied survival supplies a previous survivor might have stashed.
-        // Prefabs that don't exist are skipped gracefully.
-        private static readonly string[] SurvivorCachePool =
+        private static bool IsStoryItemContainer(Container c) =>
+            !NameContainsAny(c.gameObject.name, StoryExcludedKeywords);
+
+        // The main menu background is a real scene with containers; nothing placed there is ever reachable.
+        private static bool IsInMainMenu()
+        {
+            string activeScene = GameManager.m_ActiveScene;
+            return (activeScene != null && GameManager.MatchesMainMenuSceneName(activeScene))
+                || InterfaceManager.IsMainMenuEnabled();
+        }
+
+        // Varied survival supplies a previous survivor might have stashed, weighted so common
+        // consumables are frequent and tools (whetstone, hacksaw) are rare. Names are checked
+        // against the game's catalog — the 1.1.x list had many that didn't exist, so caches
+        // were filled from the few valid ones (mostly hacksaws).
+        private static readonly (string Name, int Weight)[] SurvivorCachePool =
         {
             // Food
-            "GEAR_CannedBeans",
-            "GEAR_CannedPeaches",
-            "GEAR_CannedSardines",
-            "GEAR_CannedDogFood",
-            "GEAR_Pemmican",
-            "GEAR_EnergyBar",
-            "GEAR_Crackers",
+            ("GEAR_CannedBeans", 10),
+            ("GEAR_PinnacleCanPeaches", 10),
+            ("GEAR_CannedSardines", 10),
+            ("GEAR_DogFood", 8),
+            ("GEAR_BeefJerky", 8),
+            ("GEAR_EnergyBar", 10),
+            ("GEAR_GranolaBar", 10),
+            ("GEAR_Crackers", 10),
+            ("GEAR_CandyBar", 8),
+            ("GEAR_PeanutButter", 6),
             // Medical
-            "GEAR_PainKillers",
-            "GEAR_AntibioticsPills",
-            "GEAR_Bandage",
+            ("GEAR_BottlePainKillers", 6),
+            ("GEAR_BottleAntibiotics", 5),
+            ("GEAR_HeavyBandage", 8),
+            ("GEAR_WaterPurificationTablets", 5),
             // Fire / light
-            "GEAR_MatchBook",
-            "GEAR_WoodMatches",
-            // Tools / repair
-            "GEAR_SewingKit",
-            "GEAR_WhetstoneKnife",
-            "GEAR_Hacksaw",
+            ("GEAR_PackMatches", 8),
+            ("GEAR_WoodMatches", 8),
             // Clothing
-            "GEAR_WoolSocks",
-            "GEAR_WoolMittens",
-            "GEAR_TuqueBeanie",
-            // Other
-            "GEAR_RopeLashing",
+            ("GEAR_WoolSocks", 4),
+            ("GEAR_Mittens", 4),
+            ("GEAR_Toque", 4),
+            // Tools / repair / other
+            ("GEAR_Rope", 3),
+            ("GEAR_SewingKit", 3),
+            ("GEAR_SharpeningStone", 2),
+            ("GEAR_Hacksaw", 1),
         };
 
         private static void TryAddSurvivorCache(Container container)
@@ -104,50 +140,53 @@ namespace LootVarianceMod
                 : Settings.survivorCacheWardrobeChancePct / 100f;
             if (!Utils.RollChance(chance)) return;
 
-            // Shuffle so every cache has a different mix of items.
-            var pool = new List<string>(SurvivorCachePool);
-            for (int i = pool.Count - 1; i > 0; i--)
-            {
-                int j = UnityEngine.Random.Range(0, i + 1);
-                (pool[i], pool[j]) = (pool[j], pool[i]);
-            }
-
             int cacheMin = Settings.survivorCacheMinItems;
             int cacheMax = Math.Max(Settings.survivorCacheMaxItems, cacheMin);
             int target   = UnityEngine.Random.Range(cacheMin, cacheMax + 1);
-            int spawned = 0;
 
-            foreach (string gearName in pool)
+            // Weighted draw without replacement; unavailable prefabs are dropped and don't count.
+            var pool = new List<(string Name, int Weight)>(SurvivorCachePool);
+            var added = new List<string>();
+
+            while (added.Count < target && pool.Count > 0)
             {
-                if (spawned >= target) break;
+                int index = PickWeightedIndex(pool);
+                string gearName = pool[index].Name;
+                pool.RemoveAt(index);
 
-                GameObject go = null;
                 try
                 {
-                    GearItem prefab = LoadPrefab(gearName);
-                    if (prefab == null) continue;
+                    GearItem gi = SpawnGear(gearName);
+                    if (gi == null) continue;
 
-                    go = GameObject.Instantiate(prefab.gameObject, container.transform.position, Quaternion.identity);
-                    go.name = prefab.name;
-
-                    var gi = go.GetComponent<GearItem>();
-                    if (gi == null) { GameObject.Destroy(go); continue; }
-
+                    gi.transform.position = container.transform.position;
                     gi.RollGearCondition(GearStartCondition.Random);
                     container.AddGear(gi);
-                    spawnedObjects.Add(go);
-                    DEBUG_RecordSpawn(gearName);
-                    spawned++;
+                    spawnedObjects.Add(gi.gameObject);
+                    added.Add(gearName);
                 }
                 catch (Exception e)
                 {
-                    if (go != null) GameObject.Destroy(go);
                     Core.Log.Warning($"[LVM] Cache item failed ({gearName}): {e.Message}");
                 }
             }
 
-            if (spawned > 0)
-                Core.Log.Msg(Loc.SpawnedCache(container.name, spawned));
+            if (added.Count > 0)
+                Core.Log.Msg($"{Loc.SpawnedCache(container.name, added.Count)}: {string.Join(", ", added)}");
+        }
+
+        private static int PickWeightedIndex(List<(string Name, int Weight)> pool)
+        {
+            int total = 0;
+            foreach (var entry in pool) total += entry.Weight;
+
+            int roll = UnityEngine.Random.Range(0, total);
+            for (int i = 0; i < pool.Count; i++)
+            {
+                roll -= pool[i].Weight;
+                if (roll < 0) return i;
+            }
+            return pool.Count - 1;
         }
 
         // Prefab cache — LoadGearItemPrefab is a Unity asset lookup; avoid repeating it.
@@ -159,6 +198,43 @@ namespace LootVarianceMod
             var prefab = GearItem.LoadGearItemPrefab(gearName);
             prefabCache[gearName] = prefab; // null is valid (prefab doesn't exist)
             return prefab;
+        }
+
+        // Spawns gear through the game's own instantiation path — the same one used when a save
+        // is loaded — so Addressables-backed (DLC / story) meshes load and the item survives reloads.
+        // A plain Object.Instantiate of the prefab worked for some items but not others.
+        private static GearItem SpawnGear(string gearName)
+        {
+            if (LoadPrefab(gearName) == null) return null;
+
+            GearItem gi = GearItem.InstantiateGearItem(gearName);
+            if (gi == null)
+            {
+                // Can't be created by name in this game mode, so it couldn't be restored from a save either.
+                prefabCache[gearName] = null;
+                Core.Log.Msg(Loc.ItemNotFound(gearName));
+                return null;
+            }
+
+            gi.gameObject.name = gearName;
+            StripMissionData(gi);
+            DEBUG_RecordSpawn(gearName);
+            return gi;
+        }
+
+        // Story prefabs carry a MissionObjectIdentifier: outside of its mission the save system
+        // treats the item as mission-managed and drops it on reload. Turn it into regular gear.
+        private static void StripMissionData(GearItem gi)
+        {
+            MissionObjectIdentifier mission = gi.m_MissionObject;
+            if (mission == null) mission = gi.GetComponent<MissionObjectIdentifier>();
+            if (mission != null)
+            {
+                mission.m_SkipUnregister = true;
+                UnityEngine.Object.DestroyImmediate(mission);
+            }
+            gi.m_MissionObject = null;
+            gi.m_DisableSerialization = false;
         }
 
         // Containers that have already been processed this zone.
@@ -173,6 +249,9 @@ namespace LootVarianceMod
         // fixing repeated cache/item spam on a single vehicle without needing instance IDs.
         private static readonly HashSet<string> handledContainers = new();
 
+        // Same idea for story-item rolls, which happen on first open rather than on populate.
+        private static readonly HashSet<string> handledStoryContainers = new();
+
         private static string ContainerKey(Container c)
         {
             var p = c.transform.position;
@@ -180,13 +259,20 @@ namespace LootVarianceMod
             return string.Intern($"{rootName}/{c.gameObject.name}@{p.x:F0},{p.y:F0},{p.z:F0}");
         }
 
-        // Story items given out this session. Once an item is in here it is never chosen
-        // again for the rest of the session — including after it's picked up, broken, or its
-        // container's zone unloads (zone unload destroys the GameObject same as breaking it,
-        // so a GameObject-liveness check can't tell "broken" from "just left the building";
-        // a name-only set is the only thing that reliably means "one copy of this item ever,
-        // per session"). Cleared only on new game (DestroyAllSpawnedObjects).
-        private static readonly HashSet<string> spawnedThisSession = new();
+        // Story items already handed out in the current save. Persisted per save slot in
+        // UserData/LootVarianceMod/<save>.txt so each story item appears at most once per
+        // playthrough, not just per session (see the SaveGameSystem patches below).
+        private static readonly HashSet<string> spawnedInSave = new();
+
+        // The save the in-memory list belongs to. The game calls RestoreGlobalData on every scene
+        // transition (reading from the 'autosave' slot) and for the last save while in the main menu,
+        // so the list is keyed by SaveGameSystem.m_CurrentSaveName: the same save merges the file in,
+        // any other save name starts a fresh list.
+        private static string _spawnedListSaveName;
+
+        // Containers are populated in bulk when a scene is first entered, so a per-container chance
+        // alone could hand out most of the pool in one region. Story items are capped per scene.
+        private static readonly Dictionary<string, int> storyItemsPerScene = new();
 
         // All GameObjects spawned by this mod — destroyed on exit to main menu
         private static readonly List<GameObject> spawnedObjects = new();
@@ -203,6 +289,9 @@ namespace LootVarianceMod
 
         // Bonus ammo fires at most once per zone load
         private static bool _ammoSpawnedThisZone = false;
+
+        // "All story items owned" is logged once per session instead of once per container.
+        private static bool _loggedAllOwned = false;
 
         // ── Condition Variance ────────────────────────────────────────────────────
 
@@ -243,69 +332,119 @@ namespace LootVarianceMod
             gi.SetNormalizedHP(norm, false);
         }
 
-        // ── Story Items in Containers ─────────────────────────────────────────────
+        // ── Container loot ────────────────────────────────────────────────────────
 
         [HarmonyPostfix]
         [HarmonyPatch(typeof(Container), nameof(Container.PopulateWithRandomGear))]
         private static void Container_PopulateWithRandomGear(Container __instance)
         {
-            if (__instance == null) return;
+            if (__instance == null || IsInMainMenu()) return;
 
             string key = ContainerKey(__instance);
             if (handledContainers.Contains(key)) return;
             handledContainers.Add(key);
 
-            bool isSafe = __instance.gameObject.name.IndexOf("safe", StringComparison.OrdinalIgnoreCase) >= 0;
-
-            if (Settings.enableStoryItems)
-            {
-                float chance = isSafe
-                    ? Settings.storyItemSafeChancePct / 100f
-                    : Settings.storyItemChancePct / 100f;
-                if (Utils.RollChance(chance))
-                {
-                    string itemName = PickAvailableStoryItem();
-                    if (itemName != null)
-                        TryAddStoryItemToContainer(__instance, itemName);
-                }
-            }
-
             TryAddSurvivorCache(__instance);
             TryAddBonusAmmo(__instance);
         }
 
-        // All rifle/revolver/bow gear names — used to detect what weapons the player carries.
+        // ── Story Items in Containers ─────────────────────────────────────────────
+        // Rolled when the player first opens a container, not in PopulateWithRandomGear: the game
+        // repopulates every container on scene load and then overwrites visited ones from the save,
+        // so rolling there "handed out" items the player never got to see.
+
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(Container), nameof(Container.BeginContainerOpen))]
+        private static void Container_BeginContainerOpen(Container __instance)
+        {
+            if (__instance == null || !Settings.enableStoryItems) return;
+            if (__instance.IsInspected()) return;
+            if (!handledStoryContainers.Add(ContainerKey(__instance))) return;
+
+            // Regions are built from several additive sub-scenes; count against the active (main) scene.
+            string scene = GameManager.m_ActiveScene ?? __instance.gameObject.scene.name ?? "";
+            storyItemsPerScene.TryGetValue(scene, out int itemsInScene);
+            if (itemsInScene >= Settings.maxStoryItemsPerZone) return;
+            if (!IsStoryItemContainer(__instance)) return;
+
+            bool isSafe = __instance.gameObject.name.IndexOf("safe", StringComparison.OrdinalIgnoreCase) >= 0;
+            float chance = isSafe
+                ? Settings.storyItemSafeChancePct / 100f
+                : Settings.storyItemChancePct / 100f;
+            if (!Utils.RollChance(chance)) return;
+
+            // An item that turns out not to be spawnable is marked unavailable, so this loop ends.
+            string itemName;
+            while ((itemName = PickAvailableStoryItem()) != null)
+            {
+                if (TryAddStoryItemToContainer(__instance, itemName, isSafe))
+                {
+                    storyItemsPerScene[scene] = itemsInScene + 1;
+                    break;
+                }
+            }
+        }
+
+        // Story items added to a container get disabled again during inspect (unlike the container's
+        // own loot), so they'd sit in front of the inspect camera invisible. Keep the item enabled.
+        private static GearItem _inspectedGear;
+
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(PlayerManager), nameof(PlayerManager.EnterInspectGearMode),
+            new Type[] { typeof(GearItem), typeof(Container), typeof(IceFishingHole), typeof(Harvestable), typeof(CookingPotItem) })]
+        private static void PlayerManager_EnterInspectGearMode(GearItem __0)
+        {
+            _inspectedGear = __0;
+            KeepInspectedGearActive();
+        }
+
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(PlayerManager), nameof(PlayerManager.UpdateInspectGear))]
+        private static void PlayerManager_UpdateInspectGear()
+        {
+            KeepInspectedGearActive();
+        }
+
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(PlayerManager), nameof(PlayerManager.ExitInspectGearMode))]
+        private static void PlayerManager_ExitInspectGearMode()
+        {
+            _inspectedGear = null;
+        }
+
+        private static void KeepInspectedGearActive()
+        {
+            if (_inspectedGear != null && !_inspectedGear.gameObject.activeSelf)
+                _inspectedGear.gameObject.SetActive(true);
+        }
+
+        // ── Bonus Ammo ────────────────────────────────────────────────────────────
+
+        // All rifle/revolver/bow/shotgun gear names — used to detect what weapons the player carries.
         private static readonly string[] RifleGearNames    = { "GEAR_Rifle", "GEAR_Rifle_Trader", "GEAR_Rifle_Barbs", "GEAR_Rifle_Curators", "GEAR_Rifle_Vaughns" };
         private static readonly string[] RevolverGearNames = { "GEAR_Revolver", "GEAR_RevolverStubNosed", "GEAR_RevolverFancy", "GEAR_RevolverGreen" };
         private static readonly string[] BowGearNames      = { "GEAR_Bow", "GEAR_Bow_Woodwrights", "GEAR_Bow_Manufactured", "GEAR_Bow_Bushcraft" };
+        private static readonly string[] ShotgunGearNames  = { "GEAR_Shotgun" };
 
         // Adds ammo directly to the player's inventory — no world spawn, no geometry issues.
         private static void GiveAmmoToPlayer(string gearName, int amount)
         {
-            GearItem prefab = LoadPrefab(gearName);
-            if (prefab == null) { Core.Log.Warning($"[LVM] Ammo prefab not found: {gearName}"); return; }
-
-            GameObject go = null;
             try
             {
-                go = GameObject.Instantiate(prefab.gameObject);
-                go.name = prefab.name;
-
-                var gi = go.GetComponent<GearItem>();
-                if (gi == null) { GameObject.Destroy(go); return; }
+                GearItem gi = SpawnGear(gearName);
+                if (gi == null) { Core.Log.Warning($"[LVM] Ammo prefab not found: {gearName}"); return; }
 
                 if (gi.m_StackableItem != null)
                     gi.m_StackableItem.m_Units = amount;
                 else
                     gi.RollGearCondition(GearStartCondition.Random);
 
-                GameManager.GetInventoryComponent().AddGear(gi);
-                DEBUG_RecordSpawn(gearName);
+                // Same path as picking an item up: merges into the existing stack and shows the HUD notification.
+                GameManager.GetPlayerManagerComponent().AddItemToPlayerInventory(gi, false, true);
                 Core.Log.Msg($"[LVM] Added ammo to inventory: {gearName} x{amount}");
             }
             catch (Exception e)
             {
-                if (go != null) GameObject.Destroy(go);
                 Core.Log.Warning($"[LVM] Bonus ammo failed ({gearName}): {e.Message}");
             }
         }
@@ -323,6 +462,7 @@ namespace LootVarianceMod
             if (HasAny(RifleGearNames)    && !inventory.GearInInventory("GEAR_RifleAmmoSingle",    thr)) candidates.Add("GEAR_RifleAmmoSingle");
             if (HasAny(RevolverGearNames) && !inventory.GearInInventory("GEAR_RevolverAmmoSingle", thr)) candidates.Add("GEAR_RevolverAmmoSingle");
             if (HasAny(BowGearNames)      && !inventory.GearInInventory("GEAR_Arrow",              thr)) candidates.Add("GEAR_Arrow");
+            if (HasAny(ShotgunGearNames)  && !inventory.GearInInventory("GEAR_ShotgunAmmoSingle",  thr)) candidates.Add("GEAR_ShotgunAmmoSingle");
             return candidates;
         }
 
@@ -345,7 +485,7 @@ namespace LootVarianceMod
         internal static void TryPeriodicBonusAmmo()
         {
             if (!Settings.enableBonusAmmo) return;
-            if (GameManager.GetPlayerTransform() == null) return;
+            if (GameManager.GetPlayerTransform() == null || IsInMainMenu()) return;
 
             var candidates = CollectLowAmmoCandidates();
             if (candidates == null || candidates.Count == 0) return;
@@ -356,87 +496,94 @@ namespace LootVarianceMod
             GiveAmmoToPlayer(chosen, amount);
         }
 
-        // Returns a story item the player doesn't already own and that hasn't been
-        // spawned yet this session, or null if all eligible items are accounted for.
-        private static string PickAvailableStoryItem()
+        // ── Story item selection ──────────────────────────────────────────────────
+
+        private static void Shuffle<T>(List<T> list)
         {
-            var pool = new List<string>();
-
-            if (Settings.includeStoryWeapons)
-                pool.AddRange(StoryWeapons);
-            if (Settings.includeStoryTools)
-                pool.AddRange(StoryTools);
-            if (Settings.includeStoryClothing)
-                pool.AddRange(StoryClothing);
-
-            if (pool.Count == 0) return null;
-
-            // Shuffle so we don't always prefer the first items
-            for (int i = pool.Count - 1; i > 0; i--)
+            for (int i = list.Count - 1; i > 0; i--)
             {
                 int j = UnityEngine.Random.Range(0, i + 1);
-                (pool[i], pool[j]) = (pool[j], pool[i]);
+                (list[i], list[j]) = (list[j], list[i]);
             }
+        }
 
+        // Returns a story item the player doesn't already own and that hasn't been handed out
+        // in this save, or null if all eligible items are accounted for. Picks a random enabled
+        // category first, then an item inside it, so no category crowds out the others.
+        private static string PickAvailableStoryItem()
+        {
+            EnsureSpawnedListFor(SaveGameSystem.m_CurrentSaveName);
+
+            var categories = new List<string[]>();
+            if (Settings.includeStoryWeapons)  categories.Add(StoryWeapons);
+            if (Settings.includeStoryTools)    categories.Add(StoryTools);
+            if (Settings.includeStoryClothing) categories.Add(StoryClothing);
+            if (categories.Count == 0) return null;
+
+            Shuffle(categories);
             var inventory = GameManager.GetInventoryComponent();
 
-            foreach (string item in pool)
+            foreach (string[] category in categories)
             {
-                // Skip if player already has this exact item
-                if (inventory != null && inventory.GearInInventory(item, 1)) continue;
+                var pool = new List<string>(category);
+                Shuffle(pool);
 
-                // Skip if this item was already given out this session — at most one copy
-                // of each story item ever exists per session, regardless of what happened
-                // to it (picked up, broken, or its zone simply unloaded).
-                if (spawnedThisSession.Contains(item)) continue;
+                foreach (string item in pool)
+                {
+                    // Skip if player already has this exact item
+                    if (inventory != null && inventory.GearInInventory(item, 1)) continue;
 
-                // Skip items whose prefab isn't loaded (e.g. DLC-exclusive gear on a base-game
-                // install) — try the next candidate instead of stalling story items entirely.
-                if (LoadPrefab(item) == null) continue;
+                    // Skip if this item was already given out in this save — at most one copy
+                    // of each story item per playthrough, whatever happened to it since.
+                    if (spawnedInSave.Contains(item)) continue;
 
-                return item;
+                    // Skip items whose prefab isn't available (e.g. DLC-exclusive gear on a
+                    // base-game install) — try the next candidate instead of stalling.
+                    if (LoadPrefab(item) == null) continue;
+
+                    return item;
+                }
             }
 
-            Core.Log.Msg(Loc.AllItemsOwned);
+            if (!_loggedAllOwned)
+            {
+                _loggedAllOwned = true;
+                Core.Log.Msg(Loc.AllItemsOwned);
+            }
             return null;
         }
 
-        // Safe: item appears inside the container loot UI.
-        private static void TryAddStoryItemToContainer(Container container, string gearName)
+        // Item appears inside the container loot UI. Returns false only when the item can't be
+        // spawned, so the caller can try another one.
+        private static bool TryAddStoryItemToContainer(Container container, string gearName, bool isSafe)
         {
-            GameObject go = null;
             try
             {
-                GearItem prefab = LoadPrefab(gearName);
-                if (prefab == null) { Core.Log.Warning(Loc.ItemNotFound(gearName)); return; }
+                GearItem gi = SpawnGear(gearName);
+                if (gi == null) return false;
 
-                go = GameObject.Instantiate(prefab.gameObject, container.transform.position, Quaternion.identity);
-                go.name = prefab.name;
-
-                var gi = go.GetComponent<GearItem>();
-                if (gi == null) { GameObject.Destroy(go); return; }
-
+                gi.transform.position = container.transform.position;
                 gi.RollGearCondition(GearStartCondition.Random);
                 container.AddGear(gi);
-                spawnedObjects.Add(go);
-                DEBUG_RecordSpawn(gearName);
+                spawnedObjects.Add(gi.gameObject);
+                spawnedInSave.Add(gearName);
 
-                spawnedThisSession.Add(gearName);
-                Core.Log.Msg(Loc.SpawnedSafeItem(container.name, gearName));
+                Core.Log.Msg(isSafe
+                    ? Loc.SpawnedSafeItem(container.name, gearName)
+                    : Loc.SpawnedItem(container.name, gearName));
             }
             catch (Exception e)
             {
-                if (go != null) GameObject.Destroy(go);
                 Core.Log.Warning(Loc.SpawnFailed(gearName, e.Message));
+                spawnedInSave.Add(gearName);
             }
+            return true;
         }
 
-
-        // ── Clear state on scene / save load ──────────────────────────────────────
+        // ── Scene / save hooks ────────────────────────────────────────────────────
         // handledContainers is NOT cleared on zone travel — a container processed
         // once this session must never be processed again (prevents duplicate caches).
-        // spawnedThisSession is also kept across zone travel for the same reason.
-        // Both are cleared only on new game (DestroyAllSpawnedObjects).
+        // It is cleared only on exit to the main menu (DestroyAllSpawnedObjects).
 
         [HarmonyPrefix]
         [HarmonyPatch(typeof(SaveGameSystem), nameof(SaveGameSystem.LoadSceneData),
@@ -452,11 +599,95 @@ namespace LootVarianceMod
         [HarmonyPatch(typeof(SaveGameSystem), nameof(SaveGameSystem.RestoreGlobalData))]
         private static void SaveGameSystem_RestoreGlobalData()
         {
-            // handledContainers and spawnedThisSession intentionally NOT cleared —
-            // prevents duplicate caches/items across save/load cycles within a session.
             _ammoSpawnedThisZone = false;
         }
 
+        // The restore argument doesn't always match the slot saves are written to ('autosave' on
+        // scene transitions), so the list is always keyed by m_CurrentSaveName.
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(SaveGameSystem), nameof(SaveGameSystem.RestoreGlobalData))]
+        private static void SaveGameSystem_RestoreGlobalData_Postfix()
+        {
+            LoadSpawnedStoryItems(SaveGameSystem.m_CurrentSaveName);
+        }
+
+        // Written on every save (including autosaves), so an item spawned and then lost by
+        // quitting without saving can appear again.
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(SaveGameSystem), nameof(SaveGameSystem.SaveGlobalData))]
+        private static void SaveGameSystem_SaveGlobalData()
+        {
+            SaveSpawnedStoryItems(SaveGameSystem.m_CurrentSaveName);
+        }
+
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(SaveGameSystem), nameof(SaveGameSystem.DeleteSaveFiles), new Type[] { typeof(string) })]
+        private static void SaveGameSystem_DeleteSaveFiles(string __0)
+        {
+            try
+            {
+                string path = SpawnedStoryItemsPath(__0);
+                if (path != null && File.Exists(path)) File.Delete(path);
+                if (__0 == _spawnedListSaveName) spawnedInSave.Clear();
+            }
+            catch (Exception e)
+            {
+                Core.Log.Warning($"[LVM] Failed to delete story item list: {e.Message}");
+            }
+        }
+
+        private static string SpawnedStoryItemsPath(string saveName)
+        {
+            if (string.IsNullOrEmpty(saveName)) return null;
+            foreach (char c in Path.GetInvalidFileNameChars())
+                saveName = saveName.Replace(c, '_');
+            return Path.Combine(MelonEnvironment.UserDataDirectory, "LootVarianceMod", saveName + ".txt");
+        }
+
+        private static void EnsureSpawnedListFor(string saveName)
+        {
+            if (saveName == _spawnedListSaveName) return;
+            spawnedInSave.Clear();
+            _spawnedListSaveName = saveName;
+        }
+
+        private static void LoadSpawnedStoryItems(string saveName)
+        {
+            EnsureSpawnedListFor(saveName);
+            try
+            {
+                string path = SpawnedStoryItemsPath(saveName);
+                if (path != null && File.Exists(path))
+                {
+                    foreach (string line in File.ReadAllLines(path))
+                        if (line.Length > 0) spawnedInSave.Add(line.Trim());
+                }
+                Core.Log.Msg($"[LVM] Story items already handed out in this save: {spawnedInSave.Count}");
+            }
+            catch (Exception e)
+            {
+                Core.Log.Warning($"[LVM] Failed to read story item list: {e.Message}");
+            }
+        }
+
+        private static void SaveSpawnedStoryItems(string saveName)
+        {
+            try
+            {
+                EnsureSpawnedListFor(saveName);
+                string path = SpawnedStoryItemsPath(saveName);
+                if (path == null) return;
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                File.WriteAllLines(path, spawnedInSave);
+            }
+            catch (Exception e)
+            {
+                Core.Log.Warning($"[LVM] Failed to write story item list: {e.Message}");
+            }
+        }
+
+        // spawnedInSave is intentionally NOT cleared here: a save-and-quit may still write it
+        // after the exit. It is reset when a different save becomes current (EnsureSpawnedListFor).
         internal static void DestroyAllSpawnedObjects()
         {
             foreach (var go in spawnedObjects)
@@ -465,8 +696,10 @@ namespace LootVarianceMod
             }
             spawnedObjects.Clear();
             handledContainers.Clear();
-            spawnedThisSession.Clear();
+            handledStoryContainers.Clear();
+            storyItemsPerScene.Clear();
             prefabCache.Clear();
+            _loggedAllOwned = false;
             DEBUG_spawnCounts.Clear();
         }
 
@@ -475,33 +708,24 @@ namespace LootVarianceMod
         internal static int DEBUG_SpawnedCount()  => spawnedObjects.Count;
         internal static IEnumerable<KeyValuePair<string, int>> DEBUG_SpawnCounts() => DEBUG_spawnCounts;
         internal static int DEBUG_HandledCount()  => handledContainers.Count;
-        internal static int DEBUG_SessionItemCount() => spawnedThisSession.Count;
+        internal static int DEBUG_SessionItemCount() => spawnedInSave.Count;
 
         internal static string DEBUG_PickStoryItem() => PickAvailableStoryItem();
 
         internal static void DEBUG_GiveStoryItem(string gearName)
         {
-            GameObject go = null;
             try
             {
-                GearItem prefab = LoadPrefab(gearName);
-                if (prefab == null) { Core.Log.Warning(Loc.ItemNotFound(gearName)); return; }
-
-                go = GameObject.Instantiate(prefab.gameObject);
-                go.name = prefab.name;
-
-                var gi = go.GetComponent<GearItem>();
-                if (gi == null) { GameObject.Destroy(go); return; }
+                GearItem gi = SpawnGear(gearName);
+                if (gi == null) return;
 
                 gi.RollGearCondition(GearStartCondition.Random);
                 GameManager.GetInventoryComponent().AddGear(gi);
-                spawnedObjects.Add(go);
-                spawnedThisSession.Add(gearName);
-                DEBUG_RecordSpawn(gearName);
+                spawnedObjects.Add(gi.gameObject);
+                spawnedInSave.Add(gearName);
             }
             catch (Exception e)
             {
-                if (go != null) GameObject.Destroy(go);
                 Core.Log.Warning(Loc.SpawnFailed(gearName, e.Message));
             }
         }
@@ -509,6 +733,29 @@ namespace LootVarianceMod
         internal static void DEBUG_SpawnCacheIn(Container container)
         {
             TryAddSurvivorCache(container);
+        }
+
+        // Reports which pool entries exist in this install (DLC / episodes vary per player).
+        internal static IEnumerable<string> DEBUG_ScanPools()
+        {
+            var pools = new (string Label, string[] Names)[]
+            {
+                ("Weapons",  StoryWeapons),
+                ("Tools",    StoryTools),
+                ("Clothing", StoryClothing),
+                ("Cache",    Array.ConvertAll(SurvivorCachePool, p => p.Name)),
+            };
+
+            foreach (var (label, names) in pools)
+            {
+                var missing = new List<string>();
+                foreach (string name in names)
+                    if (LoadPrefab(name) == null) missing.Add(name);
+
+                yield return $"[LVM] {label}: {names.Length - missing.Count} available, {missing.Count} missing";
+                if (missing.Count > 0)
+                    yield return "[LVM]   missing: " + string.Join(", ", missing);
+            }
         }
     }
 

@@ -12,6 +12,7 @@ namespace LootVarianceMod
         internal static bool enableStoryItems         => instance.enableStoryItems;
         internal static int  storyItemChancePct       => instance.storyItemChancePct;
         internal static int  storyItemSafeChancePct   => instance.storyItemSafeChancePct;
+        internal static int  maxStoryItemsPerZone     => instance.maxStoryItemsPerZone;
         internal static bool includeStoryWeapons      => instance.includeStoryWeapons;
         internal static bool includeStoryTools        => instance.includeStoryTools;
         internal static bool includeStoryClothing     => instance.includeStoryClothing;
@@ -64,6 +65,11 @@ namespace LootVarianceMod
         [Description("LVM.DESC_CHANCE_SAFES", Localize = true)]
         [Slider(1, 100, 100)]
         public int storyItemSafeChancePct = 25;
+
+        [Name("LVM.MAX_STORY_PER_ZONE", Localize = true)]
+        [Description("LVM.DESC_MAX_STORY_PER_ZONE", Localize = true)]
+        [Slider(1, 5, 5)]
+        public int maxStoryItemsPerZone = 1;
 
         [Name("LVM.INCLUDE_WEAPONS", Localize = true)]
         [Description("LVM.DESC_INCLUDE_WEAPONS", Localize = true)]
