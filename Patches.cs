@@ -4,6 +4,7 @@ using System.IO;
 using System.Reflection;
 using HarmonyLib;
 using Il2Cpp;
+using Il2CppTLD.Gear;
 using MelonLoader;
 using MelonLoader.Utils;
 using UnityEngine;
@@ -49,17 +50,35 @@ namespace LootVarianceMod
             "GEAR_BedRoll_Down",
         };
 
-        // Containers where a story item would break immersion (trash cans, appliances, mailboxes...).
+        // Containers where a story item would break immersion (trash cans, appliances, mailboxes,
+        // first aid kits, cash registers...).
         private static readonly string[] StoryExcludedKeywords =
         {
             "trash", "garbage", "dumpster", "waste", "recycl", "litter",
             "toilet", "fridge", "freezer", "oven", "stove", "microwave", "mailbox",
+            "firstaid", "aidkit", "medkit", "medicine", "cashregister",
+        };
+
+        // Small containers can hold a knife or a revolver, but not a rifle, bow or bedroll.
+        private static readonly string[] SmallContainerKeywords =
+        {
+            "glovebox", "briefcase", "lunchbox", "toolbox", "drawer",
+        };
+
+        private static readonly string[] BulkyStoryItems =
+        {
+            "GEAR_Rifle_Trader", "GEAR_Rifle_Barbs", "GEAR_Rifle_Curators", "GEAR_Rifle_Vaughns",
+            "GEAR_Bow_Woodwrights", "GEAR_Bow_Manufactured", "GEAR_Bow_Bushcraft",
+            "GEAR_Shotgun", "GEAR_BedRoll_Down",
         };
 
         // ── Survivor Cache ────────────────────────────────────────────────────────
 
         private static readonly string[] ChestKeywords    = { "chest", "trunk", "footlocker" };
         private static readonly string[] WardrobeKeywords = { "wardrobe", "dresser", "closet", "cabinet", "drawer" };
+
+        // Safes belong to the story-item system; cash registers match "drawer" but aren't a stash.
+        private static readonly string[] CacheExcludedKeywords = { "safe", "cashregister" };
 
         private static bool NameContainsAny(string name, string[] keywords)
         {
@@ -117,8 +136,7 @@ namespace LootVarianceMod
             ("GEAR_WoolSocks", 4),
             ("GEAR_Mittens", 4),
             ("GEAR_Toque", 4),
-            // Tools / repair / other
-            ("GEAR_Rope", 3),
+            // Tools / repair
             ("GEAR_SewingKit", 3),
             ("GEAR_SharpeningStone", 2),
             ("GEAR_Hacksaw", 1),
@@ -127,10 +145,7 @@ namespace LootVarianceMod
         private static void TryAddSurvivorCache(Container container)
         {
             if (!Settings.enableSurvivorCache) return;
-
-            // Safes are handled by the story-items system; skip them here.
-            bool isSafe = container.gameObject.name.IndexOf("safe", StringComparison.OrdinalIgnoreCase) >= 0;
-            if (isSafe) return;
+            if (NameContainsAny(container.gameObject.name, CacheExcludedKeywords)) return;
 
             int ctype = CacheContainerType(container);
             if (ctype == 0) return;
@@ -270,6 +285,15 @@ namespace LootVarianceMod
         // any other save name starts a fresh list.
         private static string _spawnedListSaveName;
 
+        // Set when a new Survival game starts. Until that game is first saved, m_CurrentSaveName can
+        // still hold the previous save's name, so the list is adopted by the next real save name instead.
+        private static bool _adoptNextSaveName;
+        private static string _previousSaveName;
+
+        // False after returning to the main menu until a save is restored or a new game's save name
+        // is adopted; a container opened in that state can only belong to a new game.
+        private static bool _restoredSinceMenu;
+
         // Containers are populated in bulk when a scene is first entered, so a per-container chance
         // alone could hand out most of the pool in one region. Story items are capped per scene.
         private static readonly Dictionary<string, int> storyItemsPerScene = new();
@@ -305,6 +329,15 @@ namespace LootVarianceMod
         [HarmonyPostfix]
         [HarmonyPatch(typeof(GearItem), "RollGearConditionAndWeight")]
         private static void GearItem_RollGearConditionAndWeight(GearItem __instance)
+        {
+            RerollCondition(__instance);
+        }
+
+        // Items placed in the world (floors, shelves, tables) get their condition from the seeded
+        // roll, not from the container loot path above.
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(GearItem), "RollSeededGearConditionAndWeight")]
+        private static void GearItem_RollSeededGearConditionAndWeight(GearItem __instance)
         {
             RerollCondition(__instance);
         }
@@ -345,7 +378,6 @@ namespace LootVarianceMod
             handledContainers.Add(key);
 
             TryAddSurvivorCache(__instance);
-            TryAddBonusAmmo(__instance);
         }
 
         // ── Story Items in Containers ─────────────────────────────────────────────
@@ -357,9 +389,13 @@ namespace LootVarianceMod
         [HarmonyPatch(typeof(Container), nameof(Container.BeginContainerOpen))]
         private static void Container_BeginContainerOpen(Container __instance)
         {
-            if (__instance == null || !Settings.enableStoryItems) return;
-            if (__instance.IsInspected()) return;
+            if (__instance == null || __instance.IsInspected()) return;
             if (!handledStoryContainers.Add(ContainerKey(__instance))) return;
+
+            // Bonus ammo is checked here rather than on scene load: while a scene is loading the
+            // inventory is still being restored, so the ammo count came out wrong.
+            TryAddBonusAmmo(__instance);
+            if (!Settings.enableStoryItems) return;
 
             // Regions are built from several additive sub-scenes; count against the active (main) scene.
             string scene = GameManager.m_ActiveScene ?? __instance.gameObject.scene.name ?? "";
@@ -374,8 +410,9 @@ namespace LootVarianceMod
             if (!Utils.RollChance(chance)) return;
 
             // An item that turns out not to be spawnable is marked unavailable, so this loop ends.
+            bool smallContainer = NameContainsAny(__instance.gameObject.name, SmallContainerKeywords);
             string itemName;
-            while ((itemName = PickAvailableStoryItem()) != null)
+            while ((itemName = PickAvailableStoryItem(smallContainer)) != null)
             {
                 if (TryAddStoryItemToContainer(__instance, itemName, isSafe))
                 {
@@ -441,7 +478,7 @@ namespace LootVarianceMod
 
                 // Same path as picking an item up: merges into the existing stack and shows the HUD notification.
                 GameManager.GetPlayerManagerComponent().AddItemToPlayerInventory(gi, false, true);
-                Core.Log.Msg($"[LVM] Added ammo to inventory: {gearName} x{amount}");
+                Core.Log.Msg($"[LVM] Added ammo to inventory: {gearName} x{amount} (now {CountUnits(GameManager.GetInventoryComponent(), gearName)})");
             }
             catch (Exception e)
             {
@@ -459,11 +496,43 @@ namespace LootVarianceMod
             var candidates = new List<string>();
             bool HasAny(string[] names) { foreach (string n in names) if (inventory.GearInInventory(n, 1)) return true; return false; }
 
-            if (HasAny(RifleGearNames)    && !inventory.GearInInventory("GEAR_RifleAmmoSingle",    thr)) candidates.Add("GEAR_RifleAmmoSingle");
-            if (HasAny(RevolverGearNames) && !inventory.GearInInventory("GEAR_RevolverAmmoSingle", thr)) candidates.Add("GEAR_RevolverAmmoSingle");
-            if (HasAny(BowGearNames)      && !inventory.GearInInventory("GEAR_Arrow",              thr)) candidates.Add("GEAR_Arrow");
-            if (HasAny(ShotgunGearNames)  && !inventory.GearInInventory("GEAR_ShotgunAmmoSingle",  thr)) candidates.Add("GEAR_ShotgunAmmoSingle");
+            if (HasAny(RifleGearNames)    && CountUnits(inventory, "GEAR_RifleAmmoSingle")    < thr) candidates.Add("GEAR_RifleAmmoSingle");
+            if (HasAny(RevolverGearNames) && CountUnits(inventory, "GEAR_RevolverAmmoSingle") < thr) candidates.Add("GEAR_RevolverAmmoSingle");
+            if (HasAny(BowGearNames)      && CountUnits(inventory, "GEAR_Arrow")              < thr) candidates.Add("GEAR_Arrow");
+            if (HasAny(ShotgunGearNames)  && CountUnits(inventory, "GEAR_ShotgunAmmoSingle")  < thr) candidates.Add("GEAR_ShotgunAmmoSingle");
             return candidates;
+        }
+
+        // Total rounds, counted straight from the inventory list. Loose rounds are stored as an ammo
+        // box (GEAR_RifleAmmoSingle -> GEAR_RifleAmmoBox with N units), so both names count. Checking
+        // only the single-round name made the mod hand out ammo every couple of minutes.
+        private static int CountUnits(Inventory inventory, string gearName)
+        {
+            string boxName = gearName.EndsWith("AmmoSingle", StringComparison.Ordinal)
+                ? gearName.Substring(0, gearName.Length - "Single".Length) + "Box"
+                : null;
+
+            int total = 0;
+            foreach (GearItemObject entry in inventory.m_Items)
+            {
+                GearItem gi = entry?.m_GearItem;
+                if (gi == null) continue;
+                if (!IsGearNamed(gi, entry.m_GearItemName, gearName)
+                    && (boxName == null || !IsGearNamed(gi, entry.m_GearItemName, boxName))) continue;
+
+                total += gi.m_StackableItem != null ? gi.m_StackableItem.m_Units : 1;
+            }
+            return total;
+        }
+
+        private static bool IsGearNamed(GearItem gi, string listedName, string gearName)
+        {
+            if (string.Equals(listedName, gearName, StringComparison.OrdinalIgnoreCase)) return true;
+
+            string name = gi.gameObject.name;
+            int clone = name.IndexOf("(Clone)", StringComparison.Ordinal);
+            if (clone >= 0) name = name.Substring(0, clone);
+            return string.Equals(name.Trim(), gearName, StringComparison.OrdinalIgnoreCase);
         }
 
         private static void TryAddBonusAmmo(Container container)
@@ -510,9 +579,13 @@ namespace LootVarianceMod
         // Returns a story item the player doesn't already own and that hasn't been handed out
         // in this save, or null if all eligible items are accounted for. Picks a random enabled
         // category first, then an item inside it, so no category crowds out the others.
-        private static string PickAvailableStoryItem()
+        // Small containers (drawers, gloveboxes...) never get rifles, bows or the bedroll.
+        private static string PickAvailableStoryItem(bool smallContainer = false)
         {
-            EnsureSpawnedListFor(SaveGameSystem.m_CurrentSaveName);
+            if (!_restoredSinceMenu && !_adoptNextSaveName)
+                BeginNewGameList("container opened before any save was loaded", _spawnedListSaveName);
+            if (!_adoptNextSaveName)
+                EnsureSpawnedListFor(SaveGameSystem.m_CurrentSaveName);
 
             var categories = new List<string[]>();
             if (Settings.includeStoryWeapons)  categories.Add(StoryWeapons);
@@ -530,6 +603,8 @@ namespace LootVarianceMod
 
                 foreach (string item in pool)
                 {
+                    if (smallContainer && Array.IndexOf(BulkyStoryItems, item) >= 0) continue;
+
                     // Skip if player already has this exact item
                     if (inventory != null && inventory.GearInInventory(item, 1)) continue;
 
@@ -606,9 +681,13 @@ namespace LootVarianceMod
         // scene transitions), so the list is always keyed by m_CurrentSaveName.
         [HarmonyPostfix]
         [HarmonyPatch(typeof(SaveGameSystem), nameof(SaveGameSystem.RestoreGlobalData))]
-        private static void SaveGameSystem_RestoreGlobalData_Postfix()
+        private static void SaveGameSystem_RestoreGlobalData_Postfix(string __0)
         {
-            LoadSpawnedStoryItems(SaveGameSystem.m_CurrentSaveName);
+            _restoredSinceMenu = true;
+            string currentSaveName = SaveGameSystem.m_CurrentSaveName;
+            if (__0 != currentSaveName)
+                Core.Log.Msg($"[LVM] RestoreGlobalData('{__0}'), current save '{currentSaveName}'");
+            LoadSpawnedStoryItems(currentSaveName);
         }
 
         // Written on every save (including autosaves), so an item spawned and then lost by
@@ -644,8 +723,53 @@ namespace LootVarianceMod
             return Path.Combine(MelonEnvironment.UserDataDirectory, "LootVarianceMod", saveName + ".txt");
         }
 
+        // A new game is recognised three independent ways (each logs which one fired): LaunchSandbox,
+        // a new save slot id being requested from the main menu, or a container being opened after
+        // returning to the menu without any save having been loaded.
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(GameManager), nameof(GameManager.LaunchSandbox))]
+        private static void GameManager_LaunchSandbox()
+        {
+            // m_CurrentSaveName may already be the new game's name here, so only the list's own save counts.
+            BeginNewGameList("LaunchSandbox", _spawnedListSaveName);
+        }
+
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(SaveGameSlots), nameof(SaveGameSlots.GetUnusedGameId))]
+        private static void SaveGameSlots_GetUnusedGameId()
+        {
+            // Still in the menu, so m_CurrentSaveName is the previous game's name.
+            if (IsInMainMenu())
+                BeginNewGameList("new save slot", _spawnedListSaveName ?? SaveGameSystem.m_CurrentSaveName);
+        }
+
+        private static void BeginNewGameList(string source, string previousSaveName)
+        {
+            if (!_adoptNextSaveName)
+            {
+                _previousSaveName = previousSaveName;
+                Core.Log.Msg($"[LVM] New game detected ({source}), story item list reset");
+            }
+            spawnedInSave.Clear();
+            _spawnedListSaveName = null;
+            _adoptNextSaveName = true;
+        }
+
         private static void EnsureSpawnedListFor(string saveName)
         {
+            if (_adoptNextSaveName)
+            {
+                // Still the previous game's name: keep waiting for the new save's name.
+                if (string.IsNullOrEmpty(saveName) || saveName == _previousSaveName) return;
+
+                _adoptNextSaveName = false;
+                _spawnedListSaveName = saveName;
+                // The new game's save is known now, so the "container opened before any load" check
+                // must not treat it as yet another new game.
+                _restoredSinceMenu = true;
+                return;
+            }
+
             if (saveName == _spawnedListSaveName) return;
             spawnedInSave.Clear();
             _spawnedListSaveName = saveName;
@@ -657,7 +781,7 @@ namespace LootVarianceMod
             try
             {
                 string path = SpawnedStoryItemsPath(saveName);
-                if (path != null && File.Exists(path))
+                if (path != null && !_adoptNextSaveName && File.Exists(path))
                 {
                     foreach (string line in File.ReadAllLines(path))
                         if (line.Length > 0) spawnedInSave.Add(line.Trim());
@@ -676,7 +800,7 @@ namespace LootVarianceMod
             {
                 EnsureSpawnedListFor(saveName);
                 string path = SpawnedStoryItemsPath(saveName);
-                if (path == null) return;
+                if (path == null || _adoptNextSaveName) return;
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
                 File.WriteAllLines(path, spawnedInSave);
             }
@@ -699,6 +823,7 @@ namespace LootVarianceMod
             handledStoryContainers.Clear();
             storyItemsPerScene.Clear();
             prefabCache.Clear();
+            _restoredSinceMenu = false;
             _loggedAllOwned = false;
             DEBUG_spawnCounts.Clear();
         }

@@ -1,7 +1,7 @@
 using MelonLoader;
 using UnityEngine;
 
-[assembly: MelonInfo(typeof(LootVarianceMod.Core), "LootVarianceMod", "1.2.0", "NnicolaeN")]
+[assembly: MelonInfo(typeof(LootVarianceMod.Core), "LootVarianceMod", "1.2.3", "NnicolaeN")]
 [assembly: MelonGame("Hinterland", "TheLongDark")]
 [assembly: MelonColor(255, 220, 140, 30)]
 

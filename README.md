@@ -5,20 +5,21 @@ A MelonLoader mod for **The Long Dark** that makes finding gear more exciting an
 ## Features
 
 ### Condition Variance
-Items found in containers spawn with a much wider durability spread — from nearly destroyed to nearly brand new. Configurable min/max range.
+Items found in containers and lying around the world (floors, shelves, tables) spawn with a much wider durability spread — from nearly destroyed to nearly brand new. Configurable min/max range.
 
 ### Story Mode Items in Survival
 Unique named weapons, tools and gear from the story episodes (Barb's Rifle, the Trader's and Curator's Rifles, the Survival Knife, the Spelunker's Lamp, etc.) can now appear in containers during a Survival run.
 - Rolled the first time you search a container; higher chance inside safes
 - Each story item appears at most once per playthrough, even across saves and reloads
 - Per-area limit (default 1) so a single region doesn't hand out the whole set
-- Never in trash cans, fridges, stoves, toilets or mailboxes
+- Never in trash cans, fridges, stoves, toilets, mailboxes, first aid kits or cash registers
+- Rifles, bows, the shotgun and the Down Bedroll never turn up in small containers (drawers, gloveboxes, briefcases, lunchboxes, toolboxes)
 - Toggle weapons / tools / clothing independently
 - **Note:** several story items (Vaughn's Rifle, Fancy/Green Revolver, Cougar Claw Knife, Kerosene Lamp - Spelunkers, Down BedRoll, Manufactured/Bushcraft Bow, Woodwright's Bow) are exclusive to the **Tales From the Far Territory** DLC and will only appear if you own it. Without the DLC, the pool falls back to the items that are available.
 - **Not included:** Grey Mother's Boots, Jeremiah's Knife and Astrid's / Will's outfits — the game can't keep them in a Survival save, so they would disappear on reload. The Episode 5 shotgun isn't available in Survival.
 
 ### Bonus Ammo
-When you are low on ammo for a weapon you carry, containers may occasionally produce a few extra rounds as a lucky find. Extra rounds go straight into your existing stack (rifles, revolvers, bows, shotgun).
+When you are low on ammo for a weapon you carry, containers may occasionally produce a few extra rounds as a lucky find. Extra rounds go straight into your existing stack (rifles, revolvers, bows, shotgun). Rounds stored as ammo boxes count toward the low-ammo threshold.
 
 ### Survivor Cache
 Rare chance to open a chest or wardrobe and find a hidden stash of survival supplies left by a previous survivor — mostly food, medicine and matches, sometimes warm clothing, rarely a tool. Every cache has a random mix of 3–5 items in varied condition.
@@ -52,6 +53,21 @@ dotnet build --configuration Release -p:GameDir="D:\Games\TheLongDark"
 Output: `bin/Release/net6.0/LootVarianceMod.dll`
 
 ## Changelog
+
+### v1.2.3
+- Fixed: condition variance now also applies to items lying in the world (floors, shelves, tables), not only to container loot — the game rolls those through `RollSeededGearConditionAndWeight`, which the mod didn't patch (thanks qqqbbb)
+- Fixed: when starting a new game, the list of story items already found could stop being saved if the first container was opened before the game's first save, so found story items could spawn again after reloading
+
+### v1.2.2
+- Fixed: story items still didn't spawn after quitting to the main menu and starting a new game in the same session (1.2.1 only fixed part of this). The mod now reliably detects a new game and starts a fresh list of found items for it (thanks qqqbbb)
+
+### v1.2.1
+- Fixed: starting a new game in the same session reused the previous game's list of found story items, so story items could stop spawning entirely (thanks qqqbbb)
+- Fixed: story items no longer spawn in first aid kits, medicine cabinets or cash registers (thanks qqqbbb)
+- Changed: rifles, bows, the shotgun and the Down Bedroll no longer spawn in small containers (drawers, gloveboxes, briefcases, lunchboxes, toolboxes); knives, revolvers and lamps still can
+- Fixed: bonus ammo kept coming every couple of minutes even with plenty of rounds — the game stores loose rounds as an ammo box, which the mod now counts
+- Fixed: the container bonus-ammo roll now happens when you first open a container instead of on area load, when the inventory isn't fully restored yet
+- Fixed: survivor caches no longer appear in cash registers; the 5 kg climbing rope was removed from the cache pool
 
 ### v1.2.0
 - Fixed: story items vanished after saving and reloading — they are now spawned through the game's own `InstantiateGearItem` path (the one saves use to restore gear) and stripped of mission-object data
