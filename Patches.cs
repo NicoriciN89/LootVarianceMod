@@ -204,15 +204,50 @@ namespace LootVarianceMod
             return pool.Count - 1;
         }
 
-        // Prefab cache — LoadGearItemPrefab is a Unity asset lookup; avoid repeating it.
-        private static readonly Dictionary<string, GearItem> prefabCache = new();
+        // Caches whether a gear name resolves to a real prefab in this install (DLC / episode gear
+        // varies per player). Game 2.59 removed the static GearItem.LoadGearItemPrefab(string) this
+        // used to call; names are now resolved through InstantiateGearItem — see IsGearNameValid.
+        private static readonly Dictionary<string, bool> gearNameValid = new();
 
-        private static GearItem LoadPrefab(string gearName)
+        // 2.59 removed GearItem.LoadGearItemPrefab(string). The game now resolves the gear name to
+        // its (Addressables-backed) prefab internally inside InstantiateGearItem(string) — the same
+        // path the save system uses to restore gear. Validate a name by instantiating once through
+        // that path and caching the result, so an unknown name is probed (and logged) only once.
+        private static bool IsGearNameValid(string gearName)
         {
-            if (prefabCache.TryGetValue(gearName, out var cached)) return cached;
-            var prefab = GearItem.LoadGearItemPrefab(gearName);
-            prefabCache[gearName] = prefab; // null is valid (prefab doesn't exist)
-            return prefab;
+            if (gearNameValid.TryGetValue(gearName, out var valid)) return valid;
+
+            GearItem probe = TryInstantiateGear(gearName);
+            if (probe == null) return false;
+
+            // Only needed to confirm the name resolves; drop the probe instance.
+            UnityEngine.Object.Destroy(probe.gameObject);
+            return true;
+        }
+
+        // Wraps the game's own instantiation path. Returns null (and caches the name as invalid) when
+        // the name is unknown to this install, so callers never touch the removed LoadGearItemPrefab.
+        private static GearItem TryInstantiateGear(string gearName)
+        {
+            try
+            {
+                GearItem gi = GearItem.InstantiateGearItem(gearName);
+                if (gi == null)
+                {
+                    // Can't be created by name in this game mode, so it couldn't be restored from a save either.
+                    gearNameValid[gearName] = false;
+                    Core.Log.Msg(Loc.ItemNotFound(gearName));
+                    return null;
+                }
+                gearNameValid[gearName] = true;
+                return gi;
+            }
+            catch (System.Exception ex)
+            {
+                gearNameValid[gearName] = false;
+                Core.Log.Warning(Loc.SpawnFailed(gearName, ex.Message));
+                return null;
+            }
         }
 
         // Spawns gear through the game's own instantiation path — the same one used when a save
@@ -220,16 +255,8 @@ namespace LootVarianceMod
         // A plain Object.Instantiate of the prefab worked for some items but not others.
         private static GearItem SpawnGear(string gearName)
         {
-            if (LoadPrefab(gearName) == null) return null;
-
-            GearItem gi = GearItem.InstantiateGearItem(gearName);
-            if (gi == null)
-            {
-                // Can't be created by name in this game mode, so it couldn't be restored from a save either.
-                prefabCache[gearName] = null;
-                Core.Log.Msg(Loc.ItemNotFound(gearName));
-                return null;
-            }
+            GearItem gi = TryInstantiateGear(gearName);
+            if (gi == null) return null;
 
             gi.gameObject.name = gearName;
             StripMissionData(gi);
@@ -614,7 +641,7 @@ namespace LootVarianceMod
 
                     // Skip items whose prefab isn't available (e.g. DLC-exclusive gear on a
                     // base-game install) — try the next candidate instead of stalling.
-                    if (LoadPrefab(item) == null) continue;
+                    if (!IsGearNameValid(item)) continue;
 
                     return item;
                 }
@@ -822,7 +849,7 @@ namespace LootVarianceMod
             handledContainers.Clear();
             handledStoryContainers.Clear();
             storyItemsPerScene.Clear();
-            prefabCache.Clear();
+            gearNameValid.Clear();
             _restoredSinceMenu = false;
             _loggedAllOwned = false;
             DEBUG_spawnCounts.Clear();
@@ -875,7 +902,7 @@ namespace LootVarianceMod
             {
                 var missing = new List<string>();
                 foreach (string name in names)
-                    if (LoadPrefab(name) == null) missing.Add(name);
+                    if (!IsGearNameValid(name)) missing.Add(name);
 
                 yield return $"[LVM] {label}: {names.Length - missing.Count} available, {missing.Count} missing";
                 if (missing.Count > 0)

@@ -54,6 +54,10 @@ Output: `bin/Release/net6.0/LootVarianceMod.dll`
 
 ## Changelog
 
+### v1.2.4
+- Fixed: compatibility with game update **2.59**. The update removed `GearItem.LoadGearItemPrefab(string)`, which the mod used to load/validate item prefabs. This produced `Method not found: 'Il2Cpp.GearItem Il2Cpp.GearItem.LoadGearItemPrefab(System.String)'` warnings and stopped survivor caches, story items and bonus ammo from spawning (thanks Varkom)
+- Changed: gear is now loaded and validated through the game's own `GearItem.InstantiateGearItem(string)` path (the same one the save system uses to restore gear). Names are validated once and cached, so an unknown name (DLC / episode gear the player doesn't own) is probed and logged only once instead of on every container
+
 ### v1.2.3
 - Fixed: condition variance now also applies to items lying in the world (floors, shelves, tables), not only to container loot — the game rolls those through `RollSeededGearConditionAndWeight`, which the mod didn't patch (thanks qqqbbb)
 - Fixed: when starting a new game, the list of story items already found could stop being saved if the first container was opened before the game's first save, so found story items could spawn again after reloading
