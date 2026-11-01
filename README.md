@@ -29,7 +29,7 @@ Rare chance to open a chest or wardrobe and find a hidden stash of survival supp
 ## Installation
 
 1. Install [MelonLoader](https://melonwiki.xyz/) for The Long Dark
-2. Install [ModSettings]([https://github.com/STBlade/ModSettings](https://github.com/DigitalzombieTLD/ModSettings/)) (required dependency)
+2. Install [ModSettings]([https://github.com/STBlade/ModSettings](https://github.com/DigitalzombieTLD/ModSettings/) (required dependency)
 3. Drop `LootVarianceMod.dll` into your `Mods/` folder
 
 ## Configuration
